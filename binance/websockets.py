@@ -11,6 +11,17 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.internet.error import ReactorAlreadyRunning
 
 from binance.client import Client
+import logging
+
+logger = logging.getLogger('binance.websockets')
+
+
+class RepeatTimer(threading.Timer):
+    """Source: https://stackoverflow.com/a/48741004/304209."""
+    def run(self):
+        while not self.finished.wait(self.interval):
+            if not self.finished.is_set():
+                self.function(*self.args, **self.kwargs)
 
 
 class BinanceClientProtocol(WebSocketClientProtocol):
@@ -534,19 +545,20 @@ class BinanceSocketManager(threading.Thread):
     def _start_socket_timer(self, socket_type):
         callback = self._keepalive_account_socket
 
-        self._timers[socket_type] = threading.Timer(self._user_timeout, callback, [socket_type])
+        self._timers[socket_type] = RepeatTimer(self._user_timeout, callback, [socket_type])
         self._timers[socket_type].setDaemon(True)
         self._timers[socket_type].start()
 
     def _keepalive_account_socket(self, socket_type):
         if socket_type == 'user':
             listen_key_func = self._client.stream_get_listen_key
-            callback = self._user_callback
         else:
             listen_key_func = self._client.margin_stream_get_listen_key
-            callback = self._margin_callback
+        callback = self._account_callbacks[socket_type]
         listen_key = listen_key_func()
         if listen_key != self._listen_keys[socket_type]:
+            logger.info(f"Starting new {socket_type} socket")
+            self._timers[socket_type].cancel()
             self._start_account_socket(socket_type, listen_key, callback)
 
     def stop_socket(self, conn_key):
